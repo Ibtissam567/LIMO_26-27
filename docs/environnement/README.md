@@ -208,7 +208,9 @@ ros2 launch limo_bringup j1_lane_follow.launch.py
 `which ros2` doit afficher `/opt/ros/humble/bin/ros2`.  
 S’il n’affiche rien, ROS 2 Humble n’est pas installé dans cet Ubuntu : refaire le paragraphe 2, puis `echo $ROS_DISTRO` doit répondre `humble`.
 
-Une fenêtre 3D s’ouvre. La voiture part du bas de la piste (point A) et va vers le marqueur vert (point B) en restant sur la route **noire**. Le blanc et le gris sont interdits.
+Une fenêtre 3D s’ouvre sur **toute la salle**, vue de loin. Ce n’est pas une erreur. La voiture est le petit objet noir sur la piste noire. Les traits rouge, vert et bleu sont les axes de Gazebo, ils font partie de la fenêtre.
+
+Pour voir la voiture : placer la souris sur la piste, tourner la **molette** pour zoomer, et garder le **clic gauche** enfoncé pour tourner la vue. La voiture part du bas de la piste (point A) et va vers le marqueur vert (point B) en restant sur la route **noire**. Le blanc et le gris sont interdits.
 
 La voiture avance lentement, environ 5 cm par seconde, pour qu’on puisse suivre le trajet. Regarder la fenêtre dès qu’elle apparaît : si on attend trop, la voiture est déjà arrivée au point vert.
 
