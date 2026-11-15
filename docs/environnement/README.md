@@ -125,20 +125,52 @@ ln -s ~/ros2_ws/src/limo/ros2_humble/limo_ros2 ~/ros2_ws/src/limo_ros2
 
 ## 4. Compiler
 
-Une seule fois, puis à chaque fois qu’on tire du nouveau code.
+`setup.bash` n’est **pas** dans GitHub et **pas** dans les dépôts des enseignants.  
+Ces dépôts contiennent le code source. Le fichier `setup.bash` est fabriqué par la compilation, sur votre PC, dans `~/ros2_ws/install/`.
+
+Si ce dossier `install` ne contient que `.colcon_install_layout` et `COLCON_IGNORE`, la compilation n’a trouvé aucun programme. Elle a été lancée dans le mauvais dossier. On efface ce résultat vide et on recommence **depuis** `~/ros2_ws`.
+
+Dans Ubuntu, pas dans PowerShell :
+
+```bash
+rm -rf ~/ros2_ws/install ~/ros2_ws/build ~/ros2_ws/log
+rm -rf ~/ros2_ws/src/install ~/ros2_ws/src/build ~/ros2_ws/src/log
+cd ~/ros2_ws
+source /opt/ros/humble/setup.bash
+pwd
+```
+
+`pwd` doit afficher un chemin qui finit par `/ros2_ws`. Pas par `/ros2_ws/src`.
+
+Vérifier que le code est bien là :
+
+```bash
+ls src/LIMO_26-27/src/limo_bringup/package.xml
+ls src/room207-limo
+ls src/limo
+```
+
+Chaque `ls` doit afficher un fichier ou un dossier, pas `No such file or directory`.  
+Si un dépôt école manque, refaire son `git clone` du paragraphe 3. GitLab demande le compte universitaire.
+
+Puis :
 
 ```bash
 cd ~/ros2_ws
-source /opt/ros/humble/setup.bash
 sudo rosdep init
 rosdep update
 rosdep install --from-paths src --ignore-src -r -y
+colcon list
 colcon build --symlink-install
+ls ~/ros2_ws/install/setup.bash
 ```
 
 Si `sudo rosdep init` répond que rosdep est déjà initialisé, ce n’est pas une erreur. Continuer.
 
-Ajouter aussi le workspace dans `~/.bashrc`, **sous** la ligne Humble :
+`colcon list` doit afficher des lignes comme `limo_bringup` et `room207_limo`.  
+S’il n’affiche rien, ne pas continuer : vous n’êtes pas dans `~/ros2_ws`, ou les clones sont vides.
+
+`ls ~/ros2_ws/install/setup.bash` doit afficher le chemin du fichier. **Seulement après ça**, ajouter cette ligne dans `~/.bashrc`, sous la ligne Humble :
 
 ```bash
 source ~/ros2_ws/install/setup.bash
@@ -249,7 +281,8 @@ Puis ouvrir une Pull Request sur GitHub.
 | Ce qu’on voit | Quoi vérifier |
 | --- | --- |
 | `ros2: command not found` | La commande a été tapée dans PowerShell, ou le `source` de Humble n’a pas été fait dans Ubuntu. Refaire l’étape A puis l’étape B du paragraphe 5. |
-| `Package 'limo_bringup' not found` | Le `colcon build` n’est pas fini, ou `source ~/ros2_ws/install/setup.bash` manque. |
+| `No such file or directory` sur `install/setup.bash` | Ce fichier n’est pas téléchargé. Il apparaît seulement après un `colcon build` lancé dans `~/ros2_ws`. Refaire le paragraphe 4. |
+| `Package 'limo_bringup' not found` | Le `colcon build` n’a pas fini, ou `source ~/ros2_ws/install/setup.bash` manque. |
 | La fenêtre Gazebo ne s’ouvre pas | `echo $DISPLAY` doit afficher `:0`. Relancer avec `export DISPLAY=:0`. |
 | Gazebo reste sur « loading » | Un autre Gazebo tourne encore. **Ctrl+C**, attendre, relancer une seule fois. |
 | `no on-road path` | Le point A ou B n’est pas sur la route noire. |
