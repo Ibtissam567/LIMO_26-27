@@ -208,7 +208,7 @@ ros2 launch limo_bringup j1_lane_follow.launch.py
 `which ros2` doit afficher `/opt/ros/humble/bin/ros2`.  
 S’il n’affiche rien, ROS 2 Humble n’est pas installé dans cet Ubuntu : refaire le paragraphe 2, puis `echo $ROS_DISTRO` doit répondre `humble`.
 
-Une fenêtre 3D s’ouvre sur **toute la salle**, vue de loin. Ce n’est pas une erreur. La voiture est le petit objet noir sur la piste noire. Les traits rouge, vert et bleu sont les axes de Gazebo, ils font partie de la fenêtre.
+Une fenêtre 3D s’ouvre sur **toute la salle 207**. C’est le nouveau monde du professeur (`ensem_room207`) : la piste noire est la même qu’avant, posée sur une plateforme de 20 cm, et la salle est autour. La voiture est le petit objet noir sur la piste. Les traits rouge, vert et bleu sont les axes de Gazebo.
 
 Pour voir la voiture : placer la souris sur la piste, tourner la **molette** pour zoomer, et garder le **clic gauche** enfoncé pour tourner la vue. La voiture part du bas de la piste (point A) et va vers le marqueur vert (point B) en restant sur la route **noire**. Le blanc et le gris sont interdits.
 
@@ -222,15 +222,18 @@ Pour arrêter : **Ctrl+C** dans le terminal qui a lancé la commande.
 
 Les coordonnées sont en mètres. Les deux points doivent être sur la route noire. Un point sur le blanc ou sur le gris fait échouer le calcul du chemin.
 
-**Point A**, l’endroit où la voiture apparaît. Fichier du dépôt école :
+**Point A**, l’endroit où la voiture apparaît. Depuis la mise à jour du professeur, le fichier est ici :
 
-`~/ros2_ws/src/room207-limo/launch/room207_limo.launch.py`
+`~/ros2_ws/src/room207-limo/ros2_foxy/room207_limo/launch/room207_limo.launch.py`
 
 ```python
 '-x', '-0.725347',
 '-y', '-0.086613',
+'-z', LaunchConfiguration('spawn_z'),
 '-Y', '1.5708',
 ```
+
+La hauteur par défaut `spawn_z` est `0.35` m : la piste est sur une plateforme de 20 cm. Ne pas mettre `0.15` dans cette salle, la voiture apparaîtrait dans la plateforme.
 
 `-Y` est la direction du regard. `1.5708` regarde vers le haut de la carte, `0` vers la droite, `3.1416` vers la gauche, `-1.5708` vers le bas.
 
@@ -255,7 +258,28 @@ Enregistrer, **Ctrl+C**, puis relancer la commande du paragraphe 5. Pas besoin d
 
 ---
 
-## 7. Travailler avec les autres
+## 7. Si l’installation date d’avant la salle 207
+
+Le professeur a ajouté le monde `ensem_room207` et a déplacé le paquet `room207_limo` dans `ros2_foxy`. Quelqu’un qui a cloné avant cette mise à jour voit encore l’ancienne piste seule, ou un `colcon build` qui échoue parce que l’ancien dossier de compilation pointe au mauvais endroit.
+
+Dans Ubuntu :
+
+```bash
+cd ~/ros2_ws/src/environment
+git pull
+cd ~/ros2_ws/src/room207-limo
+git pull
+cd ~/ros2_ws
+rm -rf build/room207_limo install/room207_limo
+colcon build --symlink-install --packages-select ensem_room207 room207_limo
+source install/setup.bash
+```
+
+`git pull` demande l’identifiant GitLab de l’école. Ne pas pousser ces dépôts école : on ne fait que télécharger.
+
+---
+
+## 8. Travailler avec les autres
 
 ```bash
 cd ~/ros2_ws/src/LIMO_26-27
