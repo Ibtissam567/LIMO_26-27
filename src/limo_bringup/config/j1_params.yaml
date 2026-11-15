@@ -1,0 +1,14 @@
+polar_controller:
+  ros__parameters:
+    # Gains from last year's fichierlimo.m
+    k_rho: 4.0
+    k_alpha: 40.0
+    k_beta: -10.0
+    # Goal 2.5 m in front of the spawn, same heading
+    x_star: -0.725
+    y_star: 2.41
+    theta_star: 1.5708
+    # The course gains are kept; only the output is limited for Gazebo
+    v_max: 0.08
+    w_max: 0.45
+    stop_distance: 0.08

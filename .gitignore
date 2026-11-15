@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# ROS 2
+install/
+log/
+*.pcd
+*.bag
+*.db3
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local helper scripts
+_copy_from_wsl.sh
+
+# Large / generated
+*.slxc
+slprj/

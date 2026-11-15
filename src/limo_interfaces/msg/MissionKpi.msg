@@ -1,0 +1,5 @@
+float32 elapsed_time
+float32 distance_to_goal
+float32 off_lane_distance
+uint32 collisions
+uint32 rule_violations

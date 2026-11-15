@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="point_a">
+    <static>true</static>
+    <link name="marker">
+      <visual name="disk">
+        <pose>0 0 0.02 0 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.08</radius>
+            <length>0.02</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.1 0.3 0.9 1</ambient>
+          <diffuse>0.1 0.35 1 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>

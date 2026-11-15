@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Fast DDS profile of MATLAB/Simulink (ROS Toolbox) for ROS 2 with the
+     LIMO in ROS 2 Foxy: Gazebo in the Docker container or in WSL 2 on the
+     same Windows computer, or the robot on the network.
+
+     Set FASTRTPS_DEFAULT_PROFILES_FILE to this file before the first ROS 2
+     call of the MATLAB session (room207_setup does it).
+
+     1. Discovery. Multicast discovery does not cross between Windows and
+        WSL 2 or the Docker container. Each participant also announces itself
+        by unicast on 127.0.0.1, which reaches WSL 2 (mirrored networking) and
+        the container (Docker Desktop host networking, see
+        configuration/wsl2_ubuntu20.04_foxy/fastdds_host.xml). Multicast
+        discovery is kept for the robots on the network.
+
+     2. Foxy compatibility. MATLAB R2026b uses ROS 2 Jazzy. The ROS 2 graph
+        topic ros_discovery_info (rmw_dds_common/ParticipantEntitiesInfo)
+        changed after Humble: its Gid is char[16] in Jazzy and char[24] in
+        Foxy. Foxy misreads the MATLAB messages and allocates gigabytes, until
+        the Linux kernel kills Gazebo or the robot nodes. The
+        ros_discovery_info endpoints of MATLAB are put in their own partition,
+        so that Foxy never receives them. The topics of the application are
+        not affected; only the node names of MATLAB are hidden from Foxy
+        (ros2 node list). -->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>shm</transport_id>
+      <type>SHM</type>
+    </transport_descriptor>
+    <transport_descriptor>
+      <transport_id>udp</transport_id>
+      <type>UDPv4</type>
+      <!-- Discovery probes 32 participants on each peer address (default 4:
+           too few for Gazebo, robot_state_publisher, RViz...) -->
+      <maxInitialPeersRange>32</maxInitialPeersRange>
+    </transport_descriptor>
+  </transport_descriptors>
+
+  <participant profile_name="matlab_foxy" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>shm</transport_id>
+        <transport_id>udp</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+      <builtin>
+        <initialPeersList>
+          <locator>
+            <udpv4>
+              <address>239.255.0.1</address>
+            </udpv4>
+          </locator>
+          <locator>
+            <udpv4>
+              <address>127.0.0.1</address>
+            </udpv4>
+          </locator>
+        </initialPeersList>
+      </builtin>
+    </rtps>
+  </participant>
+
+  <!-- Profiles named after the topic: used by rmw_fastrtps for the
+       ros_discovery_info publisher and subscription of MATLAB only. -->
+  <data_writer profile_name="ros_discovery_info">
+    <propertiesPolicy>
+      <properties>
+        <property>
+          <name>partitions</name>
+          <value>ros2_jazzy</value>
+        </property>
+      </properties>
+    </propertiesPolicy>
+  </data_writer>
+  <data_reader profile_name="ros_discovery_info">
+    <propertiesPolicy>
+      <properties>
+        <property>
+          <name>partitions</name>
+          <value>ros2_jazzy</value>
+        </property>
+      </properties>
+    </propertiesPolicy>
+  </data_reader>
+</profiles>
