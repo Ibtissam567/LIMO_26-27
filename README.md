@@ -83,8 +83,9 @@ source /opt/ros/humble/setup.bash
 mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
 
 # 3) Ce dépôt (packages équipe)
-git clone https://github.com/Ibtissam567/LIMO_2026-27.git
+git clone https://github.com/Ibtissam567/LIMO_26-27.git
 # ou : git pull si déjà cloné
+# Première installation, pas à pas : docs/environnement/README.md
 
 # 4) Packages école (GitLab) — à faire une fois
 # limo, environment, teleoperation, recording, room207-limo
@@ -151,7 +152,8 @@ Voir le détail de ce qui a été fait en perception / planification / contrôle
 
 ## Liens utiles
 
-- Repo GitHub (ce dépôt) : https://github.com/Ibtissam567/LIMO_2026-27
+- Repo GitHub (ce dépôt) : https://github.com/Ibtissam567/LIMO_26-27
+- Préparer son PC (première fois) : [docs/environnement/README.md](docs/environnement/README.md)
 - Groupe GitLab école : `coll/l-inp/ensem/robotic_lab/students/be-2026-groupe-4`
 
 ---
