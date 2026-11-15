@@ -150,16 +150,31 @@ Fermer Ubuntu et le rouvrir, ou taper `source ~/.bashrc`.
 
 ## 5. Lancer la simulation
 
+`ros2: command not found` veut dire que la commande a été tapée au mauvais endroit.  
+`ros2` existe seulement **dans Ubuntu 22.04**, après `source /opt/ros/humble/setup.bash`.  
+PowerShell ne connaît pas `ros2`. On ne colle pas `wsl` et `ros2` dans le même bloc.
+
 S’il y a déjà une fenêtre Gazebo, cliquer dans son terminal et faire **Ctrl+C**. Attendre qu’il s’arrête. Deux Gazebo en même temps se bloquent.
 
-```bash
+**Étape A — PowerShell**, une seule ligne. Elle ouvre Ubuntu et s’arrête. Le prompt doit ressembler à `nom@PC:~$`.
+
+```powershell
 wsl -d Ubuntu-22.04
+```
+
+**Étape B — dans cet Ubuntu**, coller ceci. Ne pas le coller dans PowerShell.
+
+```bash
 source /opt/ros/humble/setup.bash
 source ~/ros2_ws/install/setup.bash
 export DISPLAY=:0
 export GAZEBO_MODEL_DATABASE_URI=
+which ros2
 ros2 launch limo_bringup j1_lane_follow.launch.py
 ```
+
+`which ros2` doit afficher `/opt/ros/humble/bin/ros2`.  
+S’il n’affiche rien, ROS 2 Humble n’est pas installé dans cet Ubuntu : refaire le paragraphe 2, puis `echo $ROS_DISTRO` doit répondre `humble`.
 
 Une fenêtre 3D s’ouvre. La voiture part du bas de la piste (point A) et va vers le marqueur vert (point B) en restant sur la route **noire**. Le blanc et le gris sont interdits.
 
@@ -233,7 +248,7 @@ Puis ouvrir une Pull Request sur GitHub.
 
 | Ce qu’on voit | Quoi vérifier |
 | --- | --- |
-| `ros2: command not found` | Vous n’êtes pas dans Ubuntu 22.04, ou `source /opt/ros/humble/setup.bash` n’a pas été fait. |
+| `ros2: command not found` | La commande a été tapée dans PowerShell, ou le `source` de Humble n’a pas été fait dans Ubuntu. Refaire l’étape A puis l’étape B du paragraphe 5. |
 | `Package 'limo_bringup' not found` | Le `colcon build` n’est pas fini, ou `source ~/ros2_ws/install/setup.bash` manque. |
 | La fenêtre Gazebo ne s’ouvre pas | `echo $DISPLAY` doit afficher `:0`. Relancer avec `export DISPLAY=:0`. |
 | Gazebo reste sur « loading » | Un autre Gazebo tourne encore. **Ctrl+C**, attendre, relancer une seule fois. |
