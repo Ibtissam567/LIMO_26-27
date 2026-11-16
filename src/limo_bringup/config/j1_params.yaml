@@ -12,3 +12,30 @@ polar_controller:
     v_max: 0.08
     w_max: 0.45
     stop_distance: 0.08
+    reverse_v_max: 0.03
+    rear_clearance: 0.35
+    rear_half_angle: 0.70
+    scan_max_age: 0.5
+
+behavior_manager:
+  ros__parameters:
+    unsafe_confirm_frames: 3
+    recovery_enable: true
+    history_size: 50
+    blocked_time: 1.2
+    blocked_speed: 0.02
+    blocked_progress: 0.04
+    rear_clearance: 0.35
+    rear_half_angle: 0.70
+    scan_max_age: 0.5
+    odom_max_age: 0.5
+    recovery_timeout: 6.0
+    replan_hold: 1.0
+
+lane_planner:
+  ros__parameters:
+    predictive_enable: true
+    predictive_lateral_nudge: 0.12
+    history_size: 50
+    min_reverse_distance: 0.18
+    safety_margin: 0.05

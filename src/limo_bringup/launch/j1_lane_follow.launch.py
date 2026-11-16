@@ -68,7 +68,16 @@ def generate_launch_description():
             executable="lane_planner",
             name="lane_planner",
             output="screen",
-            parameters=[{"use_sim_time": True, "lookahead": 0.35, "lane_gain": 0.9, "goal_x": -0.725, "goal_y": 2.413}],
+            parameters=[
+                params,
+                {
+                    "use_sim_time": True,
+                    "lookahead": 0.35,
+                    "lane_gain": 0.9,
+                    "goal_x": -0.725,
+                    "goal_y": 2.413,
+                },
+            ],
         ),
         Node(
             package="limo_planning",
@@ -82,7 +91,7 @@ def generate_launch_description():
             executable="behavior_manager",
             name="behavior_manager",
             output="screen",
-            parameters=[{"use_sim_time": True}],
+            parameters=[params, {"use_sim_time": True}],
         ),
         Node(
             package="limo_control",

@@ -9,6 +9,7 @@ from collections import deque
 import rclpy
 from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped, Quaternion
+from limo_interfaces.msg import MissionState
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from std_msgs.msg import Bool
@@ -238,11 +239,21 @@ class RoadPlanner(Node):
         self.deadline = None
         self.block_count = 0
         self.road = None
+        self._replan_latched = False
         self.publisher = self.create_publisher(Path, "/planning/route", 10)
         self.create_subscription(Odometry, "/odom", self.on_odom, 10)
         self.create_subscription(Bool, "/perception/obstacle_stop", self.on_obstacle, 10)
+        self.create_subscription(MissionState, "/mission/state", self.on_mission, 10)
         self.create_timer(0.1, self.tick)
         self.get_logger().info("road planner waiting for the robot pose")
+
+    def on_mission(self, msg: MissionState) -> None:
+        state = msg.state or ""
+        if state == "REPLANNING" and not self._replan_latched:
+            self._replan_latched = True
+            self._replan()
+        elif state == "FOLLOW_ROAD":
+            self._replan_latched = False
 
     def on_odom(self, msg: Odometry) -> None:
         self.pose = msg
