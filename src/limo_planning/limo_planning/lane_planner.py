@@ -40,6 +40,8 @@ class LanePlanner(Node):
         self.declare_parameter("goal_x", -0.725)
         self.declare_parameter("goal_y", 2.413)
         self.declare_parameter("goal_stop", 0.35)
+        self.declare_parameter("clearance_nudge_gain", 0.55)
+        self.declare_parameter("min_clearance_warn", 0.05)
         self.lane = None
         self.pose = None
         self.route = []
@@ -82,8 +84,11 @@ class LanePlanner(Node):
         if self.mission.startswith("STOP"):
             self._publish(x, y, theta, x, y)
             return
+        # Footprint past safety margin: hold pose (behavior also latches STOP_BOUNDARY).
+        if self.lane is not None and not bool(getattr(self.lane, "footprint_safe", True)):
+            self._publish(x, y, theta, x, y)
+            return
         # Only drop the route for real off-road recovery (low confidence).
-        # Soft wheel nudges must keep following /planning/route or the car freezes on curbs.
         perception_first = (
             self.lane is not None
             and abs(float(self.lane.lateral_offset)) >= 0.55
@@ -93,7 +98,20 @@ class LanePlanner(Node):
         if waypoint is not None:
             goal_x, goal_y, goal_yaw = waypoint
             if self.lane is not None and self.lane.confidence >= 0.5:
-                nudge = -float(self.lane.lateral_offset) * 0.2
+                nudge = -float(self.lane.lateral_offset) * 0.35
+                # Extra push away from the tighter boundary.
+                left_c = float(getattr(self.lane, "left_clearance", 1.0))
+                right_c = float(getattr(self.lane, "right_clearance", 1.0))
+                warn = float(self.get_parameter("min_clearance_warn").value)
+                if left_c < warn or right_c < warn:
+                    # Positive lateral_offset → turn left in planner convention via -offset.
+                    # Small left clearance → need positive offset (turn right) → nudge uses -offset.
+                    clearance_bias = 0.0
+                    if left_c < right_c:
+                        clearance_bias = float(self.get_parameter("clearance_nudge_gain").value)
+                    else:
+                        clearance_bias = -float(self.get_parameter("clearance_nudge_gain").value)
+                    nudge += clearance_bias * 0.15
                 goal_x -= nudge * math.sin(goal_yaw)
                 goal_y += nudge * math.cos(goal_yaw)
         else:
@@ -103,8 +121,6 @@ class LanePlanner(Node):
             if self.lane is not None:
                 offset = float(self.lane.lateral_offset)
                 conf = float(self.lane.confidence)
-                # Large offset = recovery (white edge / off-road). Apply even when
-                # confidence is honest/low; strong lane follow still needs conf >= 0.5.
                 recovery = abs(offset) >= 0.55
                 if conf >= 0.5 or recovery:
                     heading = float(self.lane.heading_error) if conf >= 0.5 else 0.0
@@ -113,6 +129,16 @@ class LanePlanner(Node):
                     if conf < 0.5 and recovery:
                         lookahead = max(lookahead, 0.15)
                     lateral = -offset * float(self.get_parameter("lane_gain").value)
+                    left_c = float(getattr(self.lane, "left_clearance", 1.0))
+                    right_c = float(getattr(self.lane, "right_clearance", 1.0))
+                    warn = float(self.get_parameter("min_clearance_warn").value)
+                    if left_c < warn or right_c < warn:
+                        gain = float(self.get_parameter("clearance_nudge_gain").value)
+                        # Move goal away from the tight side in the robot frame.
+                        if left_c < right_c:
+                            lateral -= gain * 0.12
+                        else:
+                            lateral += gain * 0.12
                     goal_yaw = theta - heading * 0.9
             goal_x = x + lookahead * math.cos(theta) - lateral * math.sin(theta)
             goal_y = y + lookahead * math.sin(theta) + lateral * math.cos(theta)

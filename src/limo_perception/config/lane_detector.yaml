@@ -8,3 +8,12 @@ lane_detector:
     map_relative_path: models/qcar_large_track/materials/textures/SDCS_MapLayout.png
     ema_alpha: 0.35
     black_threshold: 55
+    # Official LIMO dims (limo_driver track_=0.172, URDF wheel/wheelbase).
+    track: 0.172
+    wheel_length: 0.045
+    wheelbase: 0.20
+    wheel_radius: 0.045
+    safety_margin: 0.05
+    luma_max_road: 90.0
+    goal_x: -0.725
+    goal_y: 2.413

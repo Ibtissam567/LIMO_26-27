@@ -1,6 +1,6 @@
 # Perception L3.1
 
-Phase 1 reliability notes: parameters live in `config/*.yaml`, sensor topics use BEST_EFFORT QoS, and confidence values are tiered so control can trust them.
+YAML parameters, BEST_EFFORT sensor QoS, tiered confidence, and **map-metric footprint clearance** so the whole LIMO stays on the black road.
 
 ## Nodes
 
@@ -8,68 +8,43 @@ Phase 1 reliability notes: parameters live in `config/*.yaml`, sensor topics use
 | --- | --- | --- |
 | `lane_detector` | `/rgb/image_raw`, `/odom`, track map | `/perception/lane`, `/perception/lane/debug` |
 | `obstacle_detector` | `/scan` | `/perception/obstacles`, `/perception/obstacle_stop` |
-| `sign_detector` | `/rgb/image_raw` | `/perception/signs` (`STOP`, `FEU_ROUGE`, `FEU_ORANGE`, `FEU_VERT`), `/perception/sign_stop` |
+| `sign_detector` | `/rgb/image_raw` | `/perception/signs`, `/perception/sign_stop` |
 | `localization_node` | `/odom` | `/localization/pose` |
 
-## Lane detection (actual algorithm)
+## Lane + footprint safety
 
-The detector follows the **black road**, not a yellow centre line:
+Black-road vision (ROI, blur, morph, connected component, centreline) plus map assist.
 
-1. Lower-image ROI, Gaussian blur, black threshold, morphological open/close.
-2. Connected component under the robot (ignore far black islands).
-3. Walk the black strip, keep clearance from white edges.
-4. Publish `lateral_offset`, `heading_error`, `curvature`, `confidence`.
-5. Optional map assist (`qcar_large_track` share texture) for wheel-clearance / return-to-road.
+**`LaneInfo` fields:**
 
-### Confidence tiers
+- `lateral_offset`, `heading_error`, `curvature`, `confidence`
+- `left_clearance`, `right_clearance` (metres; negative = past margin)
+- `footprint_safe` (rectangle + wheels + short swept check on the track map)
 
-| Source | Meaning | Typical confidence |
-| --- | --- | --- |
-| `black` | Vision found the road | 0.70–0.95 |
-| `wheels` | Map says a wheel is on white (no vision road) | 0.65, soft ±0.32 nudge |
-| `black` + map | Vision road + soft wheel bias | keep camera centre, confidence ≥ 0.75 |
-| `return` | Map recovery toward road | 0.55 |
-| `forbidden` | No black road in view | 0.40 |
-| `none` | Empty | 0.0 |
+Official dims (defaults in `config/lane_detector.yaml`):
 
-`lane_planner` still applies **lateral recovery** when `|lateral_offset| >= 0.55` even if confidence is below 0.5.
+- `track=0.172`, `wheel_length=0.045` → half-width **0.1085 m**
+- `wheelbase=0.20`, `wheel_radius=0.045` → length **0.29 m**
+- `safety_margin=0.05 m`, `luma_max_road=90` (grey + white = non-drivable)
 
-Map path: resolved from package `qcar_large_track` share (override with `map_path`).
+**Planner / behavior:**
 
-## Obstacle detection
+- `lane_planner` holds the goal if `footprint_safe` is false; nudges away from the tighter side.
+- `behavior_manager` → `STOP_BOUNDARY` after a few unsafe frames.
 
-- Front-sector LiDAR points → adaptive clustering: `gap(r) = d0 + k r Δθ`.
-- `min_cluster_points` rejects isolated noise.
-- Watchdog: if `/scan` is older than `scan_timeout`, publish `obstacle_stop=true`.
-- Narrow corridor (`block_half_width`) so side curbs on a turn do not stop the robot.
-- Large clusters (radius > `max_obstacle_radius`) are treated as walls: only stop closer than `wall_stop_distance`.
-- `stop_confirm_scans` requires several blocked scans before latching the stop.
+## Obstacle / signs
 
-## Sign detection
+See prior Phase-1 notes: adaptive LiDAR clustering, wall vs object stop, STOP vs light ROI + temporal confirm.
 
-- **STOP**: mid-frame ROI, roughly square aspect, temporal confirm (`stop_confirm_frames`).
-- **Lights**: upper ROI, compact/near-circular blobs; red lights are not re-labeled as STOP.
-- Confidence mixes blob area, aspect score, and STOP streak.
-
-## Launch
+## Launch / tests
 
 ```bash
-ros2 launch limo_bringup perception.launch.py
-# or full J1 stack
 ros2 launch limo_bringup j1_lane_follow.launch.py
-```
-
-## Unit tests (no Gazebo)
-
-```bash
-source /opt/ros/humble/setup.bash
-source ~/ros2_ws/install/setup.bash
-cd ~/ros2_ws/src/limo_perception
-python3 -m unittest discover -s test -v
+source /opt/ros/humble/setup.bash && source ~/ros2_ws/install/setup.bash
+cd ~/ros2_ws/src/limo_perception && python3 -m unittest discover -s test -v
 ```
 
 ## Limitations
 
-- Black-road thresholds are tuned for Room 207 / QCar track lighting in Gazebo.
-- Sign distance is a rough pinhole estimate.
-- Map assist needs the `qcar_large_track` texture installed in the package share.
+- Metric safety uses the track **map** (camera has no calibrated BEV metres).
+- Map plane size is fixed; Room 207 lighting still affects vision thresholds.

@@ -2,7 +2,7 @@
 """Decide the mission state from perception. Does not publish /cmd_vel."""
 
 import rclpy
-from limo_interfaces.msg import MissionState, TrafficSignArray
+from limo_interfaces.msg import LaneInfo, MissionState, TrafficSignArray
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
@@ -10,14 +10,18 @@ from std_msgs.msg import Bool
 class BehaviorManager(Node):
     def __init__(self):
         super().__init__("behavior_manager")
+        self.declare_parameter("unsafe_confirm_frames", 3)
         self.obstacle = False
         self.sign_stop = False
         self.red_light = False
+        self.footprint_safe = True
+        self._unsafe_streak = 0
         self.state = ""
         self.publisher = self.create_publisher(MissionState, "/mission/state", 10)
         self.create_subscription(Bool, "/perception/obstacle_stop", self.on_obstacle, 10)
         self.create_subscription(Bool, "/perception/sign_stop", self.on_sign, 10)
         self.create_subscription(TrafficSignArray, "/perception/signs", self.on_signs, 10)
+        self.create_subscription(LaneInfo, "/perception/lane", self.on_lane, 10)
         self.create_timer(0.2, self.tick)
         self.get_logger().info("behavior_manager started")
 
@@ -32,9 +36,21 @@ class BehaviorManager(Node):
             sign.type == "FEU_ROUGE" and sign.confidence >= 0.4 for sign in msg.signs
         )
 
+    def on_lane(self, msg: LaneInfo) -> None:
+        safe = bool(getattr(msg, "footprint_safe", True))
+        needed = max(1, int(self.get_parameter("unsafe_confirm_frames").value))
+        if safe:
+            self._unsafe_streak = 0
+            self.footprint_safe = True
+        else:
+            self._unsafe_streak += 1
+            self.footprint_safe = self._unsafe_streak < needed
+
     def tick(self) -> None:
         if self.obstacle:
             state = "STOP_OBSTACLE"
+        elif not self.footprint_safe:
+            state = "STOP_BOUNDARY"
         elif self.sign_stop:
             state = "STOP_SIGN"
         elif self.red_light:

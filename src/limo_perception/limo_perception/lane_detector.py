@@ -15,6 +15,15 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 from limo_interfaces.msg import LaneInfo
+from limo_perception.footprint_safety import (
+    DEFAULT_LUMA_MAX_ROAD,
+    DEFAULT_SAFETY_MARGIN,
+    DEFAULT_TRACK,
+    DEFAULT_WHEEL_LENGTH,
+    DEFAULT_WHEELBASE,
+    DEFAULT_WHEEL_RADIUS,
+    compute_footprint_clearance,
+)
 
 PLANE_X = 4.88
 PLANE_Y = 6.2
@@ -97,12 +106,12 @@ def wheel_offset(pose, gray):
         sy = fy + sign * distance * math.cos(yaw)
         return map_value(gray, sx, sy)
 
-    left_white = any(side_value(distance, 1) > 150 for distance in (0.12, 0.18, 0.22))
-    right_white = any(side_value(distance, -1) > 150 for distance in (0.12, 0.18, 0.22))
-    # Soft nudge only — a hard ±0.8 made the planner drop the route and freeze on the curb.
-    if right_white and not left_white:
+    # Grey islands + white paint (luma), using outer-wheel lateral samples.
+    left_bad = any(side_value(distance, 1) > DEFAULT_LUMA_MAX_ROAD for distance in (0.11, 0.13, 0.16))
+    right_bad = any(side_value(distance, -1) > DEFAULT_LUMA_MAX_ROAD for distance in (0.11, 0.13, 0.16))
+    if right_bad and not left_bad:
         return -0.32
-    if left_white and not right_white:
+    if left_bad and not right_bad:
         return 0.32
     return None
 
@@ -117,10 +126,23 @@ class LaneDetector(Node):
         self.declare_parameter("map_relative_path", DEFAULT_MAP_RELATIVE)
         self.declare_parameter("ema_alpha", 0.35)
         self.declare_parameter("black_threshold", 55)
+        self.declare_parameter("track", DEFAULT_TRACK)
+        self.declare_parameter("wheel_length", DEFAULT_WHEEL_LENGTH)
+        self.declare_parameter("wheelbase", DEFAULT_WHEELBASE)
+        self.declare_parameter("wheel_radius", DEFAULT_WHEEL_RADIUS)
+        self.declare_parameter("safety_margin", DEFAULT_SAFETY_MARGIN)
+        self.declare_parameter("luma_max_road", DEFAULT_LUMA_MAX_ROAD)
+        self.declare_parameter("goal_x", -0.725)
+        self.declare_parameter("goal_y", 2.413)
         self.bridge = CvBridge()
         self.pose = None
         self._ema_lateral = None
         self._ema_heading = None
+        self._last_clearance = {
+            "left_clearance": 0.0,
+            "right_clearance": 0.0,
+            "footprint_safe": False,
+        }
         map_file = resolve_map_path(
             str(self.get_parameter("map_path").value),
             str(self.get_parameter("map_package").value),
@@ -136,7 +158,13 @@ class LaneDetector(Node):
         self.create_subscription(Odometry, "/odom", self.on_odom, 10)
         self.publisher = self.create_publisher(LaneInfo, "/perception/lane", 10)
         self.debug_pub = self.create_publisher(Image, "/perception/lane/debug", 10)
-        self.get_logger().info(f"lane_detector listening on {topic}")
+        half = 0.5 * float(self.get_parameter("track").value) + 0.5 * float(
+            self.get_parameter("wheel_length").value
+        )
+        self.get_logger().info(
+            f"lane_detector on {topic} half_width={half:.3f} m "
+            f"margin={float(self.get_parameter('safety_margin').value):.3f} m"
+        )
 
     def on_odom(self, msg: Odometry) -> None:
         position = msg.pose.pose.position
@@ -184,8 +212,46 @@ class LaneDetector(Node):
                         result["confidence"] = 0.55
                         result["source"] = "return"
             result = self._smooth(result)
+            clearance = compute_footprint_clearance(
+                self.map_gray,
+                self.pose,
+                goal_xy=(
+                    float(self.get_parameter("goal_x").value),
+                    float(self.get_parameter("goal_y").value),
+                ),
+                track=float(self.get_parameter("track").value),
+                wheel_length=float(self.get_parameter("wheel_length").value),
+                wheelbase=float(self.get_parameter("wheelbase").value),
+                wheel_radius=float(self.get_parameter("wheel_radius").value),
+                safety_margin=float(self.get_parameter("safety_margin").value),
+                luma_max=float(self.get_parameter("luma_max_road").value),
+            )
+            self._last_clearance = clearance
+            # Bias steering toward the side with more clearance when margin is tight.
+            if clearance["footprint_safe"]:
+                tight = min(clearance["left_clearance"], clearance["right_clearance"])
+                if tight < 0.08:
+                    bias = 0.0
+                    if clearance["left_clearance"] < clearance["right_clearance"]:
+                        bias = 0.25  # turn right (positive offset convention → planner left when negative)
+                    else:
+                        bias = -0.25
+                    result["lateral_offset"] = float(
+                        np.clip(float(result["lateral_offset"]) + bias, -0.45, 0.45)
+                    )
+            else:
+                # Push hard toward the safer side.
+                if clearance["left_clearance"] <= clearance["right_clearance"]:
+                    result["lateral_offset"] = float(
+                        np.clip(max(float(result["lateral_offset"]), 0.35), -0.45, 0.45)
+                    )
+                else:
+                    result["lateral_offset"] = float(
+                        np.clip(min(float(result["lateral_offset"]), -0.35), -0.45, 0.45)
+                    )
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warn(f"lane image failed: {exc}")
+            info.footprint_safe = False
             self.publisher.publish(info)
             return
 
@@ -193,9 +259,12 @@ class LaneDetector(Node):
         info.heading_error = float(result["heading_error"])
         info.curvature = float(result["curvature"])
         info.confidence = float(result["confidence"])
+        info.left_clearance = float(self._last_clearance.get("left_clearance", 0.0))
+        info.right_clearance = float(self._last_clearance.get("right_clearance", 0.0))
+        info.footprint_safe = bool(self._last_clearance.get("footprint_safe", False))
         self.publisher.publish(info)
         if self.debug_pub.get_subscription_count() > 0:
-            debug = draw_lane(image, result)
+            debug = draw_lane(image, result, self._last_clearance)
             self.debug_pub.publish(self.bridge.cv2_to_imgmsg(debug, encoding="bgr8"))
 
     def _smooth(self, result):
@@ -379,7 +448,7 @@ def empty():
     }
 
 
-def draw_lane(image, result):
+def draw_lane(image, result, clearance=None):
     debug = image.copy()
     height, width = image.shape[:2]
     top = int(height * 0.45)
@@ -397,11 +466,15 @@ def draw_lane(image, result):
     if points:
         near_x = int(points[-1][0])
         cv2.line(debug, (near_x, top), (near_x, height - 1), color, 2)
+    safe = True if clearance is None else bool(clearance.get("footprint_safe", False))
+    left_c = 0.0 if clearance is None else float(clearance.get("left_clearance", 0.0))
+    right_c = 0.0 if clearance is None else float(clearance.get("right_clearance", 0.0))
     lines = [
         "ALLOWED: black road only",
-        "FORBIDDEN: white area and gray outside",
+        "FORBIDDEN: white / grey outside footprint",
         "FOUND: {}   conf {:.2f}".format(result["source"], result["confidence"]),
-        "offset {:+.2f} small margin from the white".format(result["lateral_offset"]),
+        "offset {:+.2f}".format(result["lateral_offset"]),
+        "Lclr {:+.2f} m  Rclr {:+.2f} m  safe={}".format(left_c, right_c, safe),
     ]
     for index, text in enumerate(lines):
         cv2.putText(

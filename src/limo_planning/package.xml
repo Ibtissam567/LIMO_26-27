@@ -7,6 +7,7 @@
   <maintainer email="e35612u@univ-lorraine.fr">BE Groupe 4</maintainer>
   <license>Apache-2.0</license>
   <depend>rclpy</depend>
+  <depend>ament_index_python</depend>
   <depend>geometry_msgs</depend>
   <depend>nav_msgs</depend>
   <depend>limo_interfaces</depend>

@@ -3,21 +3,43 @@
 
 import heapq
 import math
+import os
+from collections import deque
 
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from geometry_msgs.msg import PoseStamped, Quaternion
 from nav_msgs.msg import Odometry, Path
 from rclpy.node import Node
 from std_msgs.msg import Bool
 from PIL import Image
 
-MAP_PATH = (
-    "/home/ha054/ros2_ws/src/environment/qcar_large_track/models/"
-    "qcar_large_track/materials/textures/SDCS_MapLayout.png"
-)
 PLANE_X = 4.88
 PLANE_Y = 6.2
 CELL = 0.15
+# half_width 0.1085 + safety_margin 0.05 ≈ 0.16 m (official LIMO track/tires).
+CLEARANCE_M = 0.16
+EDGE_COST = 0.30
+
+
+def resolve_map_path():
+    try:
+        share = get_package_share_directory("qcar_large_track")
+        path = os.path.join(
+            share,
+            "models/qcar_large_track/materials/textures/SDCS_MapLayout.png",
+        )
+        if os.path.isfile(path):
+            return path
+    except Exception:  # noqa: BLE001
+        pass
+    return (
+        "/home/ha054/ros2_ws/src/environment/qcar_large_track/models/"
+        "qcar_large_track/materials/textures/SDCS_MapLayout.png"
+    )
+
+
+MAP_PATH = resolve_map_path()
 
 
 def wrap(angle):
@@ -52,6 +74,7 @@ class RoadMap:
             x += CELL
 
     def white_fraction(self, x, y):
+        """Fraction of samples that are white or grey (not dark asphalt)."""
         hits = 0
         for ix in range(-2, 3):
             for iy in range(-2, 3):
@@ -66,18 +89,34 @@ class RoadMap:
                     min(self.width - 1, int(u * self.width)),
                     min(self.height - 1, int(v * self.height)),
                 ]
-                if red > 170 and green > 170 and blue > 170:
+                luma = (red + green + blue) / 3.0
+                if luma > 90.0 or (red > 170 and green > 170 and blue > 170):
                     hits += 1
         return hits / 25.0
 
     def free(self, x, y):
-        if self.white_fraction(x, y) > 0.15:
+        """Cell usable only if the LIMO footprint keeps CLEARANCE_M from non-road."""
+        if self.white_fraction(x, y) > 0.10:
             return False
-        for step in range(8):
-            angle = 2.0 * math.pi * step / 8.0
-            if self.white_fraction(x + 0.09 * math.cos(angle), y + 0.09 * math.sin(angle)) > 0.45:
+        for step in range(12):
+            angle = 2.0 * math.pi * step / 12.0
+            if self.white_fraction(
+                x + CLEARANCE_M * math.cos(angle),
+                y + CLEARANCE_M * math.sin(angle),
+            ) > 0.28:
                 return False
         return True
+
+    def edge_penalty(self, x, y):
+        penalty = 0.0
+        for radius in (0.10, 0.16, 0.22, 0.28):
+            for step in range(8):
+                angle = 2.0 * math.pi * step / 8.0
+                penalty += self.white_fraction(
+                    x + radius * math.cos(angle),
+                    y + radius * math.sin(angle),
+                )
+        return penalty
 
     def nearest(self, point):
         best = None
@@ -89,10 +128,32 @@ class RoadMap:
                 best_distance = distance
         return best
 
+    def nearest_reachable(self, start_cell, goal_xy):
+        if start_cell is None:
+            return None
+        seen = {start_cell}
+        queue = deque([start_cell])
+        best = start_cell
+        best_distance = math.hypot(start_cell[0] - goal_xy[0], start_cell[1] - goal_xy[1])
+        while queue:
+            current = queue.popleft()
+            distance = math.hypot(current[0] - goal_xy[0], current[1] - goal_xy[1])
+            if distance < best_distance:
+                best = current
+                best_distance = distance
+            for dx, dy in ((CELL, 0.0), (-CELL, 0.0), (0.0, CELL), (0.0, -CELL)):
+                nxt = (round(current[0] + dx, 3), round(current[1] + dy, 3))
+                if nxt in self.grid and nxt not in seen:
+                    seen.add(nxt)
+                    queue.append(nxt)
+        return best
+
     def plan(self, start_xy, yaw, goal_xy):
         start_cell = self.nearest(start_xy)
-        goal_cell = self.nearest(goal_xy)
-        if start_cell is None or goal_cell is None:
+        if start_cell is None:
+            return []
+        goal_cell = self.nearest_reachable(start_cell, goal_xy)
+        if goal_cell is None:
             return []
         start_bin = int(round(wrap(yaw) / (math.pi / 4.0))) % 8
         start = (start_cell[0], start_cell[1], start_bin)
@@ -116,7 +177,11 @@ class RoadMap:
                 if turn > math.pi / 2.0 + 0.2:
                     continue
                 nxt = (nxt_xy[0], nxt_xy[1], int(round(wrap(direction) / (math.pi / 4.0))) % 8)
-                new_cost = cost[current] + CELL * (1.0 + 0.8 * turn)
+                new_cost = (
+                    cost[current]
+                    + CELL * (1.0 + 0.8 * turn)
+                    + EDGE_COST * self.edge_penalty(nxt_xy[0], nxt_xy[1])
+                )
                 if new_cost < cost.get(nxt, 1e9):
                     cost[nxt] = new_cost
                     came[nxt] = current
