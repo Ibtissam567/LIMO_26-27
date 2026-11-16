@@ -1,0 +1,7 @@
+sign_detector:
+  ros__parameters:
+    use_sim_time: true
+    image_topic: /rgb/image_raw
+    min_stop_pixels: 250
+    min_light_pixels: 40
+    stop_confirm_frames: 3

@@ -82,8 +82,13 @@ class LanePlanner(Node):
         if self.mission.startswith("STOP"):
             self._publish(x, y, theta, x, y)
             return
-        # A large lane offset means a wheel is on the white edge. Perception wins.
-        perception_first = self.lane is not None and abs(float(self.lane.lateral_offset)) >= 0.55
+        # Only drop the route for real off-road recovery (low confidence).
+        # Soft wheel nudges must keep following /planning/route or the car freezes on curbs.
+        perception_first = (
+            self.lane is not None
+            and abs(float(self.lane.lateral_offset)) >= 0.55
+            and float(self.lane.confidence) <= 0.55
+        )
         waypoint = None if perception_first else self._waypoint(x, y, theta)
         if waypoint is not None:
             goal_x, goal_y, goal_yaw = waypoint
@@ -95,12 +100,20 @@ class LanePlanner(Node):
             lookahead = 0.0
             lateral = 0.0
             goal_yaw = theta
-            if self.lane is not None and self.lane.confidence >= 0.5:
-                heading = float(self.lane.heading_error)
-                urgency = min(abs(heading), 1.0)
-                lookahead = float(self.get_parameter("lookahead").value) * (1.0 - 0.75 * urgency)
-                lateral = -float(self.lane.lateral_offset) * float(self.get_parameter("lane_gain").value)
-                goal_yaw = theta - heading * 0.9
+            if self.lane is not None:
+                offset = float(self.lane.lateral_offset)
+                conf = float(self.lane.confidence)
+                # Large offset = recovery (white edge / off-road). Apply even when
+                # confidence is honest/low; strong lane follow still needs conf >= 0.5.
+                recovery = abs(offset) >= 0.55
+                if conf >= 0.5 or recovery:
+                    heading = float(self.lane.heading_error) if conf >= 0.5 else 0.0
+                    urgency = min(abs(heading), 1.0)
+                    lookahead = float(self.get_parameter("lookahead").value) * (1.0 - 0.75 * urgency)
+                    if conf < 0.5 and recovery:
+                        lookahead = max(lookahead, 0.15)
+                    lateral = -offset * float(self.get_parameter("lane_gain").value)
+                    goal_yaw = theta - heading * 0.9
             goal_x = x + lookahead * math.cos(theta) - lateral * math.sin(theta)
             goal_y = y + lookahead * math.sin(theta) + lateral * math.cos(theta)
         self._publish(goal_x, goal_y, goal_yaw, x, y)

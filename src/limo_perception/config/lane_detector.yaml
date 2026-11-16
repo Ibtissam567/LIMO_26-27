@@ -1,0 +1,10 @@
+lane_detector:
+  ros__parameters:
+    use_sim_time: true
+    image_topic: /rgb/image_raw
+    min_pixels: 80
+    map_path: ""
+    map_package: qcar_large_track
+    map_relative_path: models/qcar_large_track/materials/textures/SDCS_MapLayout.png
+    ema_alpha: 0.35
+    black_threshold: 55

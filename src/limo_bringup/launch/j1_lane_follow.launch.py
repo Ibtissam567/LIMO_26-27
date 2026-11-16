@@ -12,7 +12,11 @@ from launch_ros.actions import Node
 def generate_launch_description():
     bringup = get_package_share_directory("limo_bringup")
     room207 = get_package_share_directory("room207_limo")
+    perception = get_package_share_directory("limo_perception")
     params = os.path.join(bringup, "config", "j1_params.yaml")
+    lane_params = os.path.join(perception, "config", "lane_detector.yaml")
+    obstacle_params = os.path.join(perception, "config", "obstacle_detector.yaml")
+    sign_params = os.path.join(perception, "config", "sign_detector.yaml")
     goal = os.path.join(bringup, "models", "goal.sdf")
 
     # Evite le telechargement des modeles Gazebo. Ne change pas le rendu.
@@ -36,21 +40,21 @@ def generate_launch_description():
             executable="lane_detector",
             name="lane_detector",
             output="screen",
-            parameters=[{"use_sim_time": True}],
+            parameters=[lane_params, {"use_sim_time": True}],
         ),
         Node(
             package="limo_perception",
             executable="obstacle_detector",
             name="obstacle_detector",
             output="screen",
-            parameters=[{"use_sim_time": True}],
+            parameters=[obstacle_params, {"use_sim_time": True}],
         ),
         Node(
             package="limo_perception",
             executable="sign_detector",
             name="sign_detector",
             output="screen",
-            parameters=[{"use_sim_time": True}],
+            parameters=[sign_params, {"use_sim_time": True}],
         ),
         Node(
             package="limo_perception",

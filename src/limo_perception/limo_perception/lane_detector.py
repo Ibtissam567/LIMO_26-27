@@ -1,28 +1,44 @@
 #!/usr/bin/env python3
-"""Detect the lane in front of the LIMO and publish LaneInfo."""
+"""Detect the black road in front of the LIMO and publish LaneInfo."""
 
 import math
+import os
 
 import cv2
 import numpy as np
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from cv_bridge import CvBridge
-from rclpy.node import Node
 from nav_msgs.msg import Odometry
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 from limo_interfaces.msg import LaneInfo
 
-MAP_PATH = (
-    "/home/ha054/ros2_ws/src/environment/qcar_large_track/models/"
-    "qcar_large_track/materials/textures/SDCS_MapLayout.png"
-)
 PLANE_X = 4.88
 PLANE_Y = 6.2
+DEFAULT_MAP_RELATIVE = (
+    "models/qcar_large_track/materials/textures/SDCS_MapLayout.png"
+)
 
 
-def load_road_points():
-    image = cv2.imread(MAP_PATH, cv2.IMREAD_GRAYSCALE)
+def resolve_map_path(map_path, map_package, map_relative_path):
+    """Prefer an explicit path; otherwise resolve from a ROS package share."""
+    if map_path:
+        return map_path
+    try:
+        share = get_package_share_directory(map_package)
+    except Exception:  # noqa: BLE001
+        return ""
+    relative = map_relative_path or DEFAULT_MAP_RELATIVE
+    return os.path.join(share, relative)
+
+
+def load_road_points(map_path):
+    if not map_path:
+        return np.zeros((0, 2), dtype=np.float64), None
+    image = cv2.imread(map_path, cv2.IMREAD_GRAYSCALE)
     if image is None:
         return np.zeros((0, 2), dtype=np.float64), None
     height, width = image.shape[:2]
@@ -83,10 +99,11 @@ def wheel_offset(pose, gray):
 
     left_white = any(side_value(distance, 1) > 150 for distance in (0.12, 0.18, 0.22))
     right_white = any(side_value(distance, -1) > 150 for distance in (0.12, 0.18, 0.22))
+    # Soft nudge only — a hard ±0.8 made the planner drop the route and freeze on the curb.
     if right_white and not left_white:
-        return -0.8
+        return -0.32
     if left_white and not right_white:
-        return 0.8
+        return 0.32
     return None
 
 
@@ -95,11 +112,27 @@ class LaneDetector(Node):
         super().__init__("lane_detector")
         self.declare_parameter("image_topic", "/rgb/image_raw")
         self.declare_parameter("min_pixels", 80)
+        self.declare_parameter("map_path", "")
+        self.declare_parameter("map_package", "qcar_large_track")
+        self.declare_parameter("map_relative_path", DEFAULT_MAP_RELATIVE)
+        self.declare_parameter("ema_alpha", 0.35)
+        self.declare_parameter("black_threshold", 55)
         self.bridge = CvBridge()
         self.pose = None
-        self.road_points, self.map_gray = load_road_points()
+        self._ema_lateral = None
+        self._ema_heading = None
+        map_file = resolve_map_path(
+            str(self.get_parameter("map_path").value),
+            str(self.get_parameter("map_package").value),
+            str(self.get_parameter("map_relative_path").value),
+        )
+        self.road_points, self.map_gray = load_road_points(map_file)
+        if self.map_gray is None:
+            self.get_logger().warn(f"lane map not loaded from '{map_file or '(empty)'}'")
+        else:
+            self.get_logger().info(f"lane map loaded from {map_file}")
         topic = self.get_parameter("image_topic").value
-        self.create_subscription(Image, topic, self.on_image, 10)
+        self.create_subscription(Image, topic, self.on_image, qos_profile_sensor_data)
         self.create_subscription(Odometry, "/odom", self.on_odom, 10)
         self.publisher = self.create_publisher(LaneInfo, "/perception/lane", 10)
         self.debug_pub = self.create_publisher(Image, "/perception/lane/debug", 10)
@@ -119,19 +152,38 @@ class LaneDetector(Node):
         info.header = msg.header
         try:
             image = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-            result = measure_lane(image, int(self.get_parameter("min_pixels").value))
+            result = measure_lane(
+                image,
+                int(self.get_parameter("min_pixels").value),
+                int(self.get_parameter("black_threshold").value),
+            )
+            vision_source = result["source"]
+            vision_heading = float(result["heading_error"])
+            vision_lateral = float(result["lateral_offset"])
             if self.pose is not None:
                 wheels = wheel_offset(self.pose, self.map_gray)
                 if wheels is not None:
-                    result["lateral_offset"] = wheels
-                    result["heading_error"] = -wheels
-                    result["source"] = "wheels"
+                    if vision_source == "black":
+                        # Keep camera lane centre; map only biases away from white tires.
+                        result["lateral_offset"] = float(
+                            np.clip(0.65 * vision_lateral + 0.35 * wheels, -0.45, 0.45)
+                        )
+                        result["heading_error"] = vision_heading
+                        result["confidence"] = max(float(result["confidence"]), 0.75)
+                        result["source"] = "black"
+                    else:
+                        result["lateral_offset"] = wheels
+                        result["heading_error"] = 0.0
+                        result["confidence"] = 0.65
+                        result["source"] = "wheels"
                 elif result["source"] == "forbidden":
                     offset = offset_back_to_road(self.pose, self.road_points)
                     if offset is not None:
-                        result["lateral_offset"] = offset
-                        result["heading_error"] = -offset
+                        result["lateral_offset"] = float(np.clip(offset, -0.45, 0.45))
+                        result["heading_error"] = 0.0
+                        result["confidence"] = 0.55
                         result["source"] = "return"
+            result = self._smooth(result)
         except Exception as exc:  # noqa: BLE001
             self.get_logger().warn(f"lane image failed: {exc}")
             self.publisher.publish(info)
@@ -146,17 +198,40 @@ class LaneDetector(Node):
             debug = draw_lane(image, result)
             self.debug_pub.publish(self.bridge.cv2_to_imgmsg(debug, encoding="bgr8"))
 
+    def _smooth(self, result):
+        alpha = float(self.get_parameter("ema_alpha").value)
+        alpha = float(np.clip(alpha, 0.0, 1.0))
+        lateral = float(result["lateral_offset"])
+        heading = float(result["heading_error"])
+        if self._ema_lateral is None or alpha >= 1.0:
+            self._ema_lateral = lateral
+            self._ema_heading = heading
+        else:
+            # Snap faster when the estimate jumps (e.g. leaving a stuck white-edge latch).
+            if abs(lateral - self._ema_lateral) > 0.35:
+                alpha = max(alpha, 0.75)
+            self._ema_lateral = alpha * lateral + (1.0 - alpha) * self._ema_lateral
+            self._ema_heading = alpha * heading + (1.0 - alpha) * self._ema_heading
+        result["lateral_offset"] = float(self._ema_lateral)
+        result["heading_error"] = float(self._ema_heading)
+        return result
 
-def measure_lane(image, min_pixels):
+
+def measure_lane(image, min_pixels, black_threshold=55):
     """Stay on the black road. White and gray are forbidden."""
     height, width = image.shape[:2]
     top = int(height * 0.45)
     band = image[top:, :]
     gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
-    black = gray < 55
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
+    black = gray < int(black_threshold)
+    kernel = np.ones((3, 3), np.uint8)
+    black = cv2.morphologyEx(black.astype(np.uint8), cv2.MORPH_OPEN, kernel)
+    black = cv2.morphologyEx(black, cv2.MORPH_CLOSE, kernel).astype(bool)
     lane = lane_under_car(black)
-    if int(np.count_nonzero(lane)) >= min_pixels:
-        return black_road(lane, band, width)
+    support = int(np.count_nonzero(lane))
+    if support >= min_pixels:
+        return black_road(lane, band, width, support)
     # No black road in view: turn toward the darker side instead of driving on white or gray.
     left = float(gray[:, : width // 2].mean())
     right = float(gray[:, width // 2 :].mean())
@@ -165,7 +240,7 @@ def measure_lane(image, min_pixels):
         "lateral_offset": -0.55 if turn_left else 0.55,
         "heading_error": -0.8 if turn_left else 0.8,
         "curvature": 0.0,
-        "confidence": 0.8,
+        "confidence": 0.40,
         "points": [],
         "source": "forbidden",
     }
@@ -190,7 +265,7 @@ def lane_under_car(black):
     return black
 
 
-def black_road(black, band, width):
+def black_road(black, band, width, support):
     height = black.shape[0]
     white = white_edge(band)
     centers = follow_lane(black, white)
@@ -205,11 +280,13 @@ def black_road(black, band, width):
     aimed = wheel_clearance(aimed, black, white)
     heading = (ahead_x - near_x) / max(width, 1)
     lateral = (aimed - width / 2.0) / (width / 2.0)
+    # Honest confidence from lane support and centreline length.
+    confidence = float(np.clip(0.70 + min(support, 400) / 1600.0 + min(len(centers), 20) / 80.0, 0.70, 0.95))
     return {
         "lateral_offset": float(np.clip(lateral, -0.4, 0.4)),
         "heading_error": float(np.clip(heading, -1.0, 1.0)),
         "curvature": float(np.clip(heading, -1.0, 1.0)),
-        "confidence": 0.9,
+        "confidence": confidence,
         "points": [(int(near_x), height - 1), (int(aimed), int(height * 0.4)), (int(ahead_x), int(height * 0.2))],
         "source": "black",
     }
@@ -289,225 +366,6 @@ def lane_run(row, previous_x):
 def white_edge(band):
     hsv = cv2.cvtColor(band, cv2.COLOR_BGR2HSV)
     return (hsv[:, :, 1] < 60) & (hsv[:, :, 2] > 200)
-
-
-def safe_center(black, white):
-    """Center of the black road, inset a little wherever it touches white or the image border."""
-    height, width = black.shape
-    if height == 0 or width == 0:
-        return None
-    centers = []
-    weights = []
-    for y in range(height):
-        xs = np.flatnonzero(black[y])
-        if xs.size < 8:
-            continue
-        left = int(xs[0])
-        right = int(xs[-1])
-        span = max(right - left, 1)
-        inset = min(28, max(10, int(0.12 * span)))
-        if left <= 2 or white[y, max(left - 1, 0)]:
-            left = min(left + inset, right)
-        if right >= width - 3 or white[y, min(right + 1, width - 1)]:
-            right = max(right - inset, left)
-        centers.append(0.5 * (left + right))
-        weights.append(1.0 + 2.0 * y / max(height - 1, 1))
-    if not centers:
-        return None
-    center = float(np.average(np.asarray(centers), weights=np.asarray(weights)))
-    return nudge_away_from_white(center, black, white)
-
-
-def nudge_away_from_white(center, black, white):
-    """Keep a small clearance from the nearer white edge. The wheels sit outside the camera view."""
-    height, width = black.shape
-    bottom = black[int(height * 0.65) :, :]
-    xs = np.flatnonzero(bottom.any(axis=0))
-    if xs.size < 8:
-        return center
-    left = int(xs[0])
-    right = int(xs[-1])
-    span = max(right - left, 1)
-    gap_left = center - left
-    gap_right = right - center
-    extra = min(36.0, 0.10 * span)
-    if gap_left + 8 < gap_right:
-        center += extra
-    elif gap_right + 8 < gap_left:
-        center -= extra
-    return float(min(max(center, left + 4), right - 4))
-
-
-def anticipate_curve(center, black, white):
-    """Shift away from a white curve that is closing in ahead, before the wheels reach it."""
-    height, width = black.shape
-    near = side_bounds(black[int(height * 0.68) :, :])
-    ahead = side_bounds(black[int(height * 0.12) : int(height * 0.55), :])
-    if near is None or ahead is None:
-        return center
-    near_left, near_right = near
-    ahead_left, ahead_right = ahead
-    close_left = ahead_left - near_left
-    close_right = near_right - ahead_right
-    span = max(near_right - near_left, 1)
-    extra = min(70.0, 0.18 * span + 0.45 * abs(close_left - close_right))
-    if close_left > close_right + 14:
-        center += extra
-    elif close_right > close_left + 14:
-        center -= extra
-    return float(min(max(center, near_left + 4), near_right - 4))
-
-
-def side_bounds(mask):
-    if mask.size == 0:
-        return None
-    xs = np.flatnonzero(mask.any(axis=0))
-    if xs.size < 8:
-        return None
-    return int(xs[0]), int(xs[-1])
-
-
-def column_center(mask):
-    counts = mask.sum(axis=0).astype(np.float64)
-    if float(counts.sum()) < 10.0:
-        return None
-    positions = np.arange(mask.shape[1], dtype=np.float64)
-    return float(np.average(positions, weights=counts))
-
-
-def yellow_mask(image):
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    return cv2.inRange(hsv, (15, 70, 70), (40, 255, 255))
-
-
-def white_mask(image):
-    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
-    return cv2.inRange(hsv, (0, 0, 180), (180, 50, 255))
-
-
-def fit_mask(mask, width, source, compact=False):
-    ys, xs = np.nonzero(mask)
-    if xs.size < 8:
-        return None
-    # Keep a thin centerline: median x in horizontal slices.
-    samples_x = []
-    samples_y = []
-    for y0 in range(0, mask.shape[0], 8):
-        row = xs[np.logical_and(ys >= y0, ys < y0 + 8)]
-        if row.size < 3:
-            continue
-        if compact and float(row.max() - row.min()) > 0.35 * width:
-            continue
-        samples_x.append(float(np.median(row)))
-        samples_y.append(float(y0 + 4))
-    if len(samples_x) < 4:
-        return None
-    samples_x = np.asarray(samples_x)
-    samples_y = np.asarray(samples_y)
-    # Image y grows downward; fit x = a y^2 + b y + c in the band.
-    coeff = np.polyfit(samples_y, samples_x, 2)
-    near_y = float(mask.shape[0] - 1)
-    far_y = float(np.min(samples_y))
-    near_x = float(np.polyval(coeff, near_y))
-    far_x = float(np.polyval(coeff, far_y))
-    lateral = (near_x - width / 2.0) / (width / 2.0)
-    heading = (far_x - near_x) / max(width, 1)
-    curvature = float(coeff[0]) / max(width, 1)
-    confidence = min(0.95, 0.55 + len(samples_x) / 40.0)
-    return {
-        "lateral_offset": float(np.clip(lateral, -1.0, 1.0)),
-        "heading_error": float(np.clip(heading, -1.0, 1.0)),
-        "curvature": float(np.clip(curvature, -1.0, 1.0)),
-        "confidence": float(confidence),
-        "points": [(int(np.polyval(coeff, y)), int(y)) for y in samples_y[::2]],
-        "source": source,
-    }
-
-
-def fit_flat_line(mask, band, width, source):
-    """Fit a dashed line that crosses the image instead of running toward the horizon."""
-    ys, xs = np.nonzero(mask)
-    if xs.size < 40:
-        return None
-    slope, intercept = np.polyfit(xs.astype(np.float64), ys.astype(np.float64), 1)
-    best = open_road_column(band)
-    # Positive offset: the line we should aim at is on the right.
-    # The open road is the opposite of the white island straight ahead.
-    lateral = (best - width / 2.0) / (width / 2.0)
-    if abs(lateral) < 0.15:
-        lateral = -0.85 if best < width / 2.0 else 0.85
-    else:
-        lateral = float(np.clip(lateral * 2.0, -1.0, 1.0))
-    heading = float(np.clip(math.atan2(1.0, -slope) / (math.pi / 2.0), -1.0, 1.0))
-    if best < width / 2.0:
-        heading = -abs(heading)
-    else:
-        heading = abs(heading)
-    x_samples = np.linspace(float(xs.min()), float(xs.max()), 12)
-    points = []
-    for x_value in x_samples:
-        y_value = int(slope * x_value + intercept)
-        if 0 <= y_value < mask.shape[0]:
-            points.append((int(x_value), y_value))
-    return {
-        "lateral_offset": float(np.clip(lateral, -1.0, 1.0)),
-        "heading_error": float(np.clip(heading, -1.0, 1.0)),
-        "curvature": float(np.clip(slope, -1.0, 1.0)),
-        "confidence": 0.9,
-        "points": points,
-        "source": source,
-    }
-
-
-def fit_edge(band, width):
-    """A bright edge blocks the road ahead. Turn toward the wider black road."""
-    gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
-    bright_rows = np.nonzero((gray > 200).mean(axis=1) > 0.6)[0]
-    if bright_rows.size < 4:
-        return None
-    below = gray[int(bright_rows.max()) + 1 :, :]
-    if below.size == 0 or float(below.mean()) > 40.0:
-        return None
-    best = open_road_column(band)
-    turn_left = best <= width / 2.0
-    return {
-        "lateral_offset": -0.85 if turn_left else 0.85,
-        "heading_error": -0.9 if turn_left else 0.9,
-        "curvature": 0.0,
-        "confidence": 0.8,
-        "points": [(best, int(bright_rows.mean()))],
-        "source": "edge",
-    }
-
-
-def open_road_column(band):
-    gray = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY)
-    dark = gray < 60
-    flipped = dark[::-1]
-    height, width = dark.shape
-    depth = np.zeros(width, dtype=np.float64)
-    for x_index in range(width):
-        column = flipped[:, x_index]
-        count = 0
-        for value in column:
-            if not value:
-                break
-            count += 1
-        depth[x_index] = count
-    smooth = np.convolve(depth, np.ones(41) / 41.0, mode="same")
-    return int(np.argmax(smooth))
-
-
-def road_center(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    dark = gray < 50
-    if int(np.count_nonzero(dark)) < image.shape[1] * 8:
-        return None
-    weights = dark.sum(axis=0).astype(np.float64)
-    if float(weights.sum()) < 1.0:
-        return None
-    positions = np.arange(image.shape[1], dtype=np.float64)
-    return float(np.average(positions, weights=weights))
 
 
 def empty():
